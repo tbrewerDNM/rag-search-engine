@@ -2,6 +2,8 @@ from lib.search_utils import cosine_similarity, load_movies
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import os
+import re
+import json
 
 
 class SemanticSearch:
@@ -116,3 +118,109 @@ def perform_search(query, limit):
 
     for i, result in enumerate(results, 1):
         print(f"{i}. {result['title']} (score: {result['score']:.4f})\n  {result['description']}")
+
+
+def chunk_text(text: str, chunk_size=200, overlap=0) -> list[str]:
+    tokens = text.split(" ")
+
+    chunks = []
+    current_tokens = []
+
+    i = 0
+    while i < len(tokens):
+        current_tokens.append(tokens[i])
+
+        if len(current_tokens) >= chunk_size:
+            chunks.append(current_tokens)
+            current_tokens = []
+            i -= overlap
+        
+        i += 1
+    
+    if len(current_tokens) > 0:
+        chunks.append(current_tokens)
+
+    return chunks
+
+
+def semantic_chunk_text(text: str, chunk_size=200, overlap=0) -> list[list[str]]:
+    tokens = re.split(r"(?<=[.!?])\s+", text)
+
+    chunks = []
+    current_tokens = []
+
+    i = 0
+    while i < len(tokens):
+        current_tokens.append(tokens[i])
+
+        if len(current_tokens) >= chunk_size:
+            chunks.append(current_tokens)
+            current_tokens = []
+            i -= overlap
+        
+        i += 1
+    
+    if len(current_tokens) > 0:
+        chunks.append(current_tokens)
+
+    return chunks
+
+
+class ChunkedSemanticSearch(SemanticSearch):
+    def __init__(self) -> None:
+        super().__init__()
+        self.chunk_embeddings = None
+        self.chunk_metadata = None
+    
+    def build_chunk_embeddings(self, documents):
+        self.documents = documents
+        
+        all_chunks = []
+        self.chunk_metadata = []
+
+        for idx, doc in enumerate(documents):
+            self.document_map[doc['id']] = doc
+
+            if not doc['description']:
+                continue
+            
+            chunks = semantic_chunk_text(doc['description'],  4, 1)
+
+            all_chunks.extend(chunks)
+
+            for chunk_idx, chunk in enumerate(chunks):
+                self.chunk_metadata.append({
+                    'movie_idx': idx,
+                    'chunk_idx': chunk_idx,
+                    'total_chunks': len(chunks), 
+                })
+        
+        self.chunk_embeddings = self.model.encode(all_chunks)
+
+        with open("cache/chunk_embeddings.npy", "wb") as f:
+            np.save(f, self.chunk_embeddings)
+        
+        with open("cache/chunk_metadata.json", "w") as f:
+            f.write(json.dump({"chunks": self.chunk_metadata, "total_chunks": len(all_chunks)}, f, indent=2))
+        
+        return self.chunk_embeddings
+
+    def load_or_create_embeddings(self, documents):
+        self.documents = documents
+
+        for doc in documents:
+            self.document_map[doc['id']] = doc
+        
+        chunk_embeddings_exists = os.path.exists("cache/chunk_embeddings.npy")
+        chunk_json_exists = os.path.exists("cache/chunk_metadata.json")
+
+        if chunk_embeddings_exists and chunk_json_exists:
+            with open("cache/chunk_embeddings.npy", "rb") as f:
+                self.chunk_embeddings = np.load(f)
+        
+            with open("cache/chunk_metadata.json", "r") as f:
+                self.chunk_metadata = json.load(f)
+
+            return self.chunk_embeddings
+    
+        return self.build_chunk_embeddings(documents)
