@@ -223,7 +223,8 @@ def rrf_search_command(
     k: int = RRF_K,
     limit: int = DEFAULT_SEARCH_LIMIT,
     enhance: str | None = None,
-    rerank: str | None = None
+    rerank: str | None = None,
+    evaluate: int = 0
 ) -> dict:
     movies = load_movies()
     searcher = HybridSearch(movies)
@@ -295,12 +296,11 @@ User query: "{query}"
 
     if rerank == "cross_encoder":
         rerank_scores = {}
-        cross_encoder = CrossEncoder("cross-encoder/ms-marco-TinyBERT-L2-v2")
+        # Force CPU to avoid CUDA compatibility failures on older GPUs.
+        cross_encoder = CrossEncoder("cross-encoder/ms-marco-TinyBERT-L2-v2", device="cpu")
         pairs = []
         for doc in results:
-            pairs.append(
-                pairs.append([query, f"{doc.get('title', '')} - {doc.get('document', '')}"])
-            )
+            pairs.append([query, f"{doc.get('title', '')} - {doc.get('document', '')}"])
         scores = cross_encoder.predict(pairs)
 
         for i, doc in enumerate(results):
@@ -365,3 +365,47 @@ Score:""")
         "k": k,
         "results": results,
     }
+
+def evaluate_search_results(query: str, results: list[dict]) -> list[int]:
+    response = client.models.generate_content(
+        model="gemma-3-27b-it",
+        contents=f"""Rate how relevant each result is to this query on a 0-3 scale:
+
+Query: "{query}"
+
+Results:
+{chr(10).join([f"{result['title']} - {result['document']}" for result in results])}
+
+Scale:
+- 3: Highly relevant
+- 2: Relevant
+- 1: Marginally relevant
+- 0: Not relevant
+
+Do NOT give any numbers other than 0, 1, 2, or 3.
+
+Return ONLY the scores in the same order you were given the documents. Return a valid JSON list, nothing else. For example:
+
+[2, 0, 3, 2, 0, 1]""",
+    )
+    raw_scores = response.text if getattr(response, "text", None) else "[]"
+    try:
+        parsed_scores = json.loads(raw_scores)
+    except (TypeError, json.JSONDecodeError):
+        parsed_scores = []
+
+    if not isinstance(parsed_scores, list):
+        parsed_scores = []
+
+    scores: list[int] = []
+    for score in parsed_scores[: len(results)]:
+        try:
+            normalized = int(score)
+        except (TypeError, ValueError):
+            normalized = 0
+        scores.append(max(0, min(3, normalized)))
+
+    if len(scores) < len(results):
+        scores.extend([0] * (len(results) - len(scores)))
+
+    return scores

@@ -1,6 +1,7 @@
 import argparse
 
 from lib.hybrid_search import (
+    evaluate_search_results,
     normalize_scores,
     rrf_search_command,
     weighted_search_command,
@@ -58,6 +59,11 @@ def main() -> None:
         choices=["individual", "batch", "cross_encoder"],
         help="Query enhancement method",
     )
+    rrf_parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        help="Evaluate the search results",
+    )
 
     args = parser.parse_args()
 
@@ -108,6 +114,11 @@ def main() -> None:
                     print(f"   {', '.join(ranks)}")
                 print(f"   {res['document'][:100]}...")
                 print()
+            
+            if args.evaluate:
+                scores = evaluate_search_results(args.query, result["results"])
+                for i, score in enumerate(scores, 1):
+                    print(f"{i}. {result['results'][i - 1]['title']}: {score}/3")
         case _:
             parser.print_help()
 
