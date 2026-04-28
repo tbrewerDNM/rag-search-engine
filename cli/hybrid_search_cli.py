@@ -55,7 +55,7 @@ def main() -> None:
     rrf_parser.add_argument(
         "--rerank-method",
         type=str,
-        choices=["individual"],
+        choices=["individual", "batch", "cross_encoder"],
         help="Query enhancement method",
     )
 
@@ -86,7 +86,7 @@ def main() -> None:
                 print(f"   {res['document'][:100]}...")
                 print()
         case "rrf-search":
-            result = rrf_search_command(args.query, args.k, args.limit, args.enhance)
+            result = rrf_search_command(args.query, args.k, args.limit, args.enhance, args.rerank_method)
 
             print(
                 f"Reciprocal Rank Fusion Results for '{result['query']}' (k={result['k']}):"

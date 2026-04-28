@@ -1,6 +1,9 @@
+import json
 import os
+from time import sleep
 from dotenv import load_dotenv
 from google import genai
+from sentence_transformers import CrossEncoder
 
 from .keyword_search import InvertedIndex
 from .search_utils import (
@@ -219,7 +222,8 @@ def rrf_search_command(
     query: str,
     k: int = RRF_K,
     limit: int = DEFAULT_SEARCH_LIMIT,
-    enhance: str | None = None
+    enhance: str | None = None,
+    rerank: str | None = None
 ) -> dict:
     movies = load_movies()
     searcher = HybridSearch(movies)
@@ -283,7 +287,76 @@ User query: "{query}"
         enhanced_query = response.text
 
     search_limit = limit
+
+    if rerank:
+        search_limit *= 5
+
     results = searcher.rrf_search(enhanced_query, k, search_limit)
+
+    if rerank == "cross_encoder":
+        rerank_scores = {}
+        cross_encoder = CrossEncoder("cross-encoder/ms-marco-TinyBERT-L2-v2")
+        pairs = []
+        for doc in results:
+            pairs.append(
+                pairs.append([query, f"{doc.get('title', '')} - {doc.get('document', '')}"])
+            )
+        scores = cross_encoder.predict(pairs)
+
+        for i, doc in enumerate(results):
+            rerank_scores[doc['id']] = scores[i]
+        
+        results = sorted(results, key=lambda x: rerank_scores[x['id']], reverse=True)
+        
+    elif rerank == "batch":
+        rerank_scores = {}
+        response = client.models.generate_content(
+            model="gemma-3-27b-it",
+            contents=f"""Rank the movies listed below by relevance to the following search query.
+
+Query: "{query}"
+
+Movies:
+{json.dumps(results)}
+
+Return ONLY the movie IDs in order of relevance (best match first). Return a valid JSON list, nothing else.
+
+For example:
+[75, 12, 34, 2, 1]
+
+Ranking:""")
+
+        ids = json.loads(response.text)
+        for i, id in enumerate(ids):
+            rerank_scores[int(id)] = 100 - i
+        
+        results = sorted(results, key=lambda x: rerank_scores.get(int(x.get('id') or 0) or 0) or 0, reverse=True)
+
+    elif rerank == "individual":
+        rerank_scores = {}
+
+        for doc in results:
+            response = client.models.generate_content(
+                model="gemma-3-27b-it",
+                contents=f"""Rate how well this movie matches the search query.
+
+Query: "{query}"
+Movie: {doc.get("title", "")} - {doc.get("document", "")}
+
+Consider:
+- Direct relevance to query
+- User intent (what they're looking for)
+- Content appropriateness
+
+Rate 0-10 (10 = perfect match).
+Output ONLY the number in your response, no other text or explanation.
+
+Score:""")
+            rerank_scores[doc['id']] = float(response.text)
+            sleep(3)
+
+            if rerank_scores:
+                results = sorted(results, key=lambda x: rerank_scores[x['id']], reverse=True)
 
     return {
         "original_query": original_query,
